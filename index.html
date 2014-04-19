@@ -1,0 +1,238 @@
+<!--<script src="adapter.js"></script>-->
+<video id="localVideo" autoplay></video>
+<video id="remoteVideo" autoplay></video>
+<button id="callButton" onclick="createOffer()">Call</button>
+<div id="logBox"><div>
+<div id="infoBox" style="outline:1px solid; background:rgba(255,255,255,0.5); position:fixed; left:0; top:0; display:inline-block;">qwe</div>
+
+<script>
+// Approximate workflow:
+//  Peer1 (camera owner)                      Peer2 (beholder)
+// 0) pc=RTCPeerConnection()                 pc=RTCPeerConnection()
+//         ...                                      ...
+// 1) getUserMedia() //request to allow
+// 2) on gotLocalStream() //allowed
+//     pc.addStream()
+//         ...                                      ...
+// 3)                                        on <<stream somehow intended to apper now>>
+//                                            pc.createOffer()
+// 4)                                        on gotLocalSessionDescription()
+//                                            pc.setLocalDescription()
+//                                            <<sending description to peer1>>
+// 5) on <<receive offer from peer2>>
+//     pc.setRemoteDescription()
+// 6) on <<pc.setRemoteDescription OK>>
+//     pc.createAnswer()
+// 7) on gotLocalSessionDescription()
+//     pc.setLocalDescription()
+//     <<sending description to peer2>>
+// 8)                                         on <<receive answer from peer1>>
+//                                             pc.setRemoteDescription()
+// 9)                                         on <<pc.setRemoteDescription OK>>
+//                                             <<just logs>>
+// 10)                                        on gotRemoteStream
+//                                             localVideo.src = URL.createObjectURL(stream)
+
+//-------------
+// Logging
+//-------------
+var cons_log = console.log;
+console.log = function(str) {
+	cons_log.apply(console, arguments);
+	if (typeof str !== "string") str = JSON.stringify(str);
+	var d = document.createElement("div");
+	d.textContent = str;
+	logBox.firstElementChild ? logBox.insertBefore(d, logBox.firstElementChild) : logBox.appendChild(d);
+}
+
+window.onerror = function(errorMsg, url, lineNumber) {
+	var msg = "Error happened on <"+url+
+		"\n> on line "+lineNumber+":\n"+
+		errorMsg;
+	alert(msg);
+}
+
+var logError = function(err){ console.log(err); console.log(new Error().stack) };
+
+
+//-------------------------
+// Cross-browser stuff
+//-------------------------
+var RTCPeerConnection = window.mozRTCPeerConnection || window.webkitRTCPeerConnection;
+var RTCIceCandidate = window.mozRTCIceCandidate || window.RTCIceCandidate;
+var RTCSessionDescription = window.mozRTCSessionDescription || window.RTCSessionDescription;
+navigator.getUserMedia = navigator.getUserMedia || navigator.mozGetUserMedia || navigator.webkitGetUserMedia;
+
+
+//---------------------
+// Getting streams
+//---------------------
+navigator.getUserMedia(
+	{ audio: false, video: true },
+	gotLocalStream,
+	function(error) { console.log(error) }
+);
+
+function gotLocalStream(stream) {
+	console.log("got local stream");
+	//document.getElementById("callButton").style.display = 'inline-block';
+	localVideo.src = URL.createObjectURL(stream);
+	
+	console.log("adding stream to peer connection");
+	pc.addStream(stream);
+}
+
+function gotRemoteStream(event) {
+	console.log("got remote stream");
+	remoteVideo.src = URL.createObjectURL(event.stream);
+	remoteVideo.play(); // вообще, не нужно. НО МАЛО ЛИ
+}
+
+
+//--------------------------------------------
+// The Great And Powerful Peer Connection
+//--------------------------------------------
+var pc = new RTCPeerConnection({
+	iceServers: [
+		{url: "stun:stun.l.google.com:19302"},
+		{url: "turn:numb.viagenie.ca", credential: "yipa", username: "yipa@hopemail.biz"}
+	]
+} , {
+	optional: [
+		//{DtlsSrtpKeyAgreement: true},
+		//{RtpDataChannels: true}
+	]
+});
+pc.onicecandidate = gotIceCandidate;
+pc.onaddstream = gotRemoteStream;
+
+
+function updateInfo() {
+	infoBox.innerHTML = "";
+	infoBox.innerHTML += "Gathering: " + pc.iceGatheringState + "<br>";
+	infoBox.innerHTML += "Signaling: " + pc.signalingState + "<br>";
+	infoBox.innerHTML += "ICE: " + pc.iceConnectionState + "<br>";
+}
+//pc.oniceconnectionstatechange = function(e){console.log("!!!!!");console.log(e)};
+//pc.onnegotiationneeded = function(e){console.log("!!!!!");console.log(e)};
+//pc.onsignalingstatechange = function(e){console.log("!!!!!");console.log(e)};
+//pc.ondatachannel = function(e){console.log("!!!!!");console.log(e)};
+//pc.onremovestream = function(e){console.log("!!!!!");console.log(e)};
+pc.oniceconnectionstatechange = updateInfo;
+pc.onsignalingstatechange = updateInfo;
+
+
+//------------------------
+// Offering-answering
+//------------------------
+function createOffer() {
+	console.log("creating offer");
+	pc.createOffer(
+		gotLocalSessionDescription,
+		function(error) { console.log(error) },
+		{ 'mandatory': { 'OfferToReceiveAudio': false, 'OfferToReceiveVideo': true } }
+	);
+}
+
+function createAnswer() {
+	console.log("creating answer");
+	pc.createAnswer(
+		gotLocalSessionDescription,
+		function(error) { console.log(error) },
+		{ 'mandatory': { 'OfferToReceiveAudio': false, 'OfferToReceiveVideo': true } }
+	);
+}
+
+function gotLocalSessionDescription(description) {
+	console.log("got local description <"+description.type+">");
+	pc.setLocalDescription(description, function(){ console.log('session description success.') }, function(e){ console.log(e) });
+	sendMessage(description);
+}
+
+function iceCandidateType(candidateSDP) {
+	if (candidateSDP.indexOf("typ relay ") >= 0)
+		return "TURN";
+	if (candidateSDP.indexOf("typ srflx ") >= 0)
+		return "STUN";
+	if (candidateSDP.indexOf("typ host ") >= 0)
+		return "HOST";
+	return "UNKNOWN";
+}
+
+function gotIceCandidate(event) {
+	console.log("got ice candidate");
+	if (event.candidate) {
+		sendMessage({
+			type: 'candidate',
+			label: event.candidate.sdpMLineIndex,
+			id: event.candidate.sdpMid,
+			candidate: event.candidate.candidate
+		});
+		console.log(iceCandidateType(event.candidate.candidate));
+	}
+}
+
+
+//-------------------------------
+// Messaging (aka signaling)
+//-------------------------------
+function sendMessage(data) {
+	console.log("sending <"+data.type+">");
+	ws.send(JSON.stringify(data));
+}
+
+function recvMessage(e) {
+	var data = JSON.parse(e.data);
+	console.log("received <"+data.type+">");
+	
+	switch(data.type) {
+	case "hello":
+		break;
+	case "offer":
+		console.log("creating session description from incomed offer");
+		pc.setRemoteDescription(
+			new RTCSessionDescription(
+				data,
+				function(){ console.log("offer bla-bla") },
+				logError
+			),
+			function() {console.log("remote description OK from offer"); createAnswer();},
+			logError
+		);
+		break;
+	case "answer":
+		console.log("creating session description from incomed answer");
+		// какой-то кастыль для ФФ -> Хром, https://code.google.com/p/webrtc/issues/detail?id=2628
+		data.sdp = data.sdp.replace(/a=sendonly/g, "a=sendrecv");
+		pc.setRemoteDescription(
+			new RTCSessionDescription(
+				data,
+				function(){ console.log("answer bla-bla") },
+				function(e) {console.log("error while creating remote session description: "+e)}
+			),
+			function() {console.log("remote description OK from answer")},
+			function(e) {console.log("error while setting remote description: "+e)}
+		);
+		break;
+	case "candidate":
+		console.log("creating candidate from income");
+		var candidate = new RTCIceCandidate({
+			sdpMLineIndex: data.label,
+			candidate: data.candidate
+		});
+		pc.addIceCandidate(candidate, function(){ console.log("candidate added") }, logError);
+		break;
+	}
+}
+
+//var ws = new WebSocket("ws://"+location.hostname+":"+location.port);
+var ws = new WebSocket("ws://3bl3gamer.no-ip.org:9000");
+//ws.binaryType = "arraybuffer"
+ws.onopen = function(event) {
+	console.log('onopen');
+};
+ws.onmessage = recvMessage;
+ws.onclose = function(event) {
+	console.log('onclose');
+};
+</script>
