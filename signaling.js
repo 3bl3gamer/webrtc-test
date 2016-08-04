@@ -1,10 +1,11 @@
 var http = require("http");
+var fs = require("fs");
 var WebSocketServer = require('websocket').server;
 
 
-
+var index = fs.readFileSync("index.html");
 var server = http.createServer(function(req, res) {
-	
+	res.end(index);
 }).listen(9000);
 
 
